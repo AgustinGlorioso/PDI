@@ -11,25 +11,19 @@ def load_image(image_path):
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB) # Convertir a RGB para Matplotlib
 
 def preprocess_and_segment(image):
-    """
-    Fase 1: Preprocesamiento y Segmentación.
-    Aísla el tornillo del fondo rellenando su silueta.
-    """
     gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     
     # Binarización invertida
     _, binary_mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     
-    # Esto garantiza que cualquier hueco interno (por brillos) desaparezca.
     contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     mask_filled = np.zeros_like(binary_mask)
     if contours:
-        # Tomamos el contorno más grande (el tornillo)
         main_contour = max(contours, key=cv2.contourArea)
-        # Lo dibujamos relleno (thickness=cv2.FILLED)
         cv2.drawContours(mask_filled, [main_contour], -1, 255, thickness=cv2.FILLED)
+    plt.imshow(mask_filled)
     
     return gray, mask_filled
 
@@ -60,44 +54,124 @@ def align_spatial(image, mask):
     
     aligned_img = cv2.warpAffine(image, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
     aligned_mask = cv2.warpAffine(mask, M, (w, h), flags=cv2.INTER_NEAREST)
+
+    # La cabeza del tornillo es más ancha, por lo que tiene más píxeles blancos en la máscara.
+    # Comparamos la mitad izquierda con la mitad derecha de la máscara.
+    left_half = aligned_mask[:, :w//2]
+    right_half = aligned_mask[:, w//2:]
+    
+    if np.sum(right_half) > np.sum(left_half):
+        # Si hay más masa a la derecha, rotamos 180 grados
+        aligned_img = cv2.rotate(aligned_img, cv2.ROTATE_180)
+        aligned_mask = cv2.rotate(aligned_mask, cv2.ROTATE_180)
     
     return aligned_img, aligned_mask
+
+def split_regions(aligned_img):
+    """
+    Divide la máscara del tornillo en Cabeza, Cuello y Rosca basándose en el largo.
+    """
+    # Proyección vertical para encontrar dónde empieza y termina el tornillo exactamente
+    col_sums = np.sum(aligned_img, axis=0)
+    valid_cols = np.where(col_sums > 0)[0]
+    
+    if len(valid_cols) == 0:
+        return {}, []
+
+    x_min, x_max = valid_cols[0], valid_cols[-1]
+    length = x_max - x_min
+
+    # Definir los puntos de corte (Ajusta estos porcentajes si es necesario)
+    cut1 = x_min + int(length * 0.20) # 20%: Fin de la cabeza, inicio del cuello
+    cut2 = x_min + int(length * 0.45) # 50%: Fin del cuello, inicio de la rosca
+
+    regions = {}
+    
+    # Máscara de la Cabeza
+    regions["Cabeza"] = np.zeros_like(aligned_img)
+    regions["Cabeza"][:, x_min:cut1] = aligned_img[:, x_min:cut1]
+    
+    # Máscara del Cuello
+    regions["Cuello"] = np.zeros_like(aligned_img)
+    regions["Cuello"][:, cut1:cut2] = aligned_img[:, cut1:cut2]
+    
+    # Máscara de la Rosca
+    regions["Rosca"] = np.zeros_like(aligned_img)
+    regions["Rosca"][:, cut2:x_max] = aligned_img[:, cut2:x_max]
+
+    # Definir los rangos de las columnas (X) para cada sección
+    secciones = {
+        "Cabeza": (x_min, cut1),
+        "Cuello": (cut1, cut2),
+        "Rosca": (cut2, x_max)
+    }
+
+    regions_gray = {}
+    regions_mask = {}
+    
+    for nombre, (inicio, fin) in secciones.items():
+        # 1. Extraemos físicamente los pedazos
+        recorte_gris = aligned_gray[:, inicio:fin].copy()
+        recorte_mask = aligned_mask[:, inicio:fin].copy()
+        
+        # 2. Aplicamos la máscara al recorte gris para eliminar cualquier fondo
+        roi_limpio = cv2.bitwise_and(recorte_gris, recorte_gris, mask=recorte_mask)
+        
+        regions_gray[nombre] = roi_limpio
+        regions_mask[nombre] = recorte_mask
+
+    plt.imshow(regions_gray["Cabeza"])
+    plt.imshow(regions_gray["Cuello"])
+    plt.imshow(regions_gray["Rosca"])        
+    
+    return regions, [x_min, cut1, cut2, x_max]
+
 
 def extract_features_and_classify(aligned_gray, aligned_mask, threshold_anomaly=100):
     """
     Fase 3, 4 y 5: Extracción, Segmentación y Clasificación.
-    Usa filtro Black-Hat para detectar arañazos oscuros.
     """
-    # FIX 2.1: Reducimos la erosión a (5,5) para no borrar los bordes de la cabeza, 
-    # que es donde suele estar el defecto "scratch_head".
-    kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    # # 1. Máscara interna agresiva para quitar las sombras de los bordes (9x9)
+    kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
     inner_mask = cv2.erode(aligned_mask, kernel_erode, iterations=1)
     
-    # FIX 2.2: Usamos la operación morfológica Black-Hat.
+    # Operación morfológica Black-Hat.
     # Extrae elementos oscuros (arañazos) que sean más pequeños que el kernel (15x15)
     kernel_bh = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
     blackhat = cv2.morphologyEx(aligned_gray, cv2.MORPH_BLACKHAT, kernel_bh)
-    
+
     # Umbralizamos el resultado del Black-Hat para quedarnos solo con los defectos marcados
-    # (Puedes ajustar el valor '40' dependiendo de la iluminación de tus fotos)
-    _, anomalies_thresh = cv2.threshold(blackhat, 40, 255, cv2.THRESH_BINARY)
+    _, anomalies_thresh = cv2.threshold(blackhat, 50, 255, cv2.THRESH_BINARY)
     
     # Aplicamos la máscara interna para ignorar el fondo y el borde exterior
     internal_anomalies = cv2.bitwise_and(anomalies_thresh, anomalies_thresh, mask=inner_mask)
     
-    # FIX 2.3: Limpieza final. Usamos una apertura pequeña para eliminar ruido 
-    # (puntitos aislados) y dejar solo las manchas/líneas reales.
+    # Limpieza final. Usamos una apertura pequeña para eliminar ruido 
     kernel_clean = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     internal_anomalies = cv2.morphologyEx(internal_anomalies, cv2.MORPH_OPEN, kernel_clean)
     
-    # Cuantificar hallazgos
-    anomaly_score = np.sum(internal_anomalies > 0)
+    # En lugar de sumar todos los píxeles, buscamos los "manchones" detectados
+    contours, _ = cv2.findContours(internal_anomalies, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    # Clasificación
-    is_anomalous = anomaly_score > threshold_anomaly
+    final_anomalies_mask = np.zeros_like(internal_anomalies)
+    anomaly_score = 0
+    
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        
+        # Ignorar ruido muy pequeño (< 15 píxeles) 
+        # Ignorar sombras gigantes (como la cruz de la cabeza) (> 400 píxeles)
+        # ESTOS VALORES PUEDES AJUSTARLOS SEGÚN EL TAMAÑO DE TUS FOTOS
+        if 15 < area < 400:
+            # Dibujamos solo las anomalías que cumplen el criterio
+            cv2.drawContours(final_anomalies_mask, [cnt], -1, 255, thickness=cv2.FILLED)
+            anomaly_score += area
+            
+    # Nueva condición: si el área total de arañazos válidos es mayor a 50, es anómala.
+    is_anomalous = anomaly_score > 50
     diagnosis = "Anómala" if is_anomalous else "Normal"
     
-    return internal_anomalies, anomaly_score, diagnosis
+    return final_anomalies_mask, anomaly_score, diagnosis
 
 def visualize_pipeline(original, mask, aligned, anomalies, diagnosis, score):
     """Muestra el resultado del pipeline completo."""
@@ -129,29 +203,17 @@ def visualize_pipeline(original, mask, aligned, anomalies, diagnosis, score):
     plt.show()
 
 if __name__ == "__main__":
-    # ==========================================
-    # EJEMPLO DE USO (Reemplaza con tu ruta real)
-    # ==========================================
-    # Para probar el MVP, crea una imagen de prueba o descarga una de MVTec AD
-    # test_image_path = "data/anomaly/scratch/000.png" 
-    
-    # Simulación para que el script no falle si no tienes la imagen aún:
-    print("Iniciando Pipeline de Inspección de Tornillos...")
     try:
-        # Intenta cargar una imagen real
         img = load_image("datos/scratch_head/000.png") 
         
-        # Ejecutar Pipeline
         gray_img, mask = preprocess_and_segment(img)
         aligned_img, aligned_mask = align_spatial(img, mask)
         
-        # Convertir imagen alineada a grises para el análisis de características
         aligned_gray = cv2.cvtColor(aligned_img, cv2.COLOR_RGB2GRAY)
-        anomalies_mask, score, diagnosis = extract_features_and_classify(aligned_gray, aligned_mask)
+        regions_masks, cuts = split_regions(aligned_gray)
+        #anomalies_mask, score, diagnosis = extract_features_and_classify(aligned_gray, aligned_mask)
         
-        # Visualizar
-        visualize_pipeline(img, mask, aligned_img, anomalies_mask, diagnosis, score)
+        #visualize_pipeline(img, mask, aligned_img, anomalies_mask, diagnosis, score)
         
     except FileNotFoundError as e:
-        print(f"⚠️ {e}")
-        print("Por favor, coloca una imagen de un tornillo.")
+        print(f"{e} Por favor, coloca una imagen de un tornillo.")
