@@ -1,2 +1,7 @@
 # Ignorar la carpeta de las fotos
 datos/
+datos.zip
+
+# Archivos compilados de Python
+__pycache__/
+*.pyc
