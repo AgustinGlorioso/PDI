@@ -119,6 +119,27 @@ def align_spatial(image, mask):
     
     return aligned_img, aligned_mask
 
+def align_to_template(img, mask, template_mask):
+    curr_mask = (mask > 0).astype(np.uint8)
+
+    flipped_mask = cv2.flip(curr_mask, 0)
+
+    print("curr_mask:", curr_mask.shape, curr_mask.dtype)
+    print("template_mask:", template_mask.shape, template_mask.dtype)
+    
+    overlap_normal = np.sum(
+       cv2.bitwise_and(curr_mask, template_mask)
+    )
+
+    overlap_flipped = np.sum(
+        cv2.bitwise_and(flipped_mask, template_mask)
+    )
+
+    if overlap_flipped > overlap_normal:
+        return cv2.flip(img, 0), flipped_mask
+    else:
+        return img, curr_mask
+
 def split_regions(aligned_gray, aligned_mask):
 
     col_sums = np.sum(aligned_mask, axis=0)
@@ -160,10 +181,18 @@ def split_regions(aligned_gray, aligned_mask):
 
 if __name__ == "__main__":
     try:
-        img = load_image("datos/manipulated_front/010.png") 
-        
+        img = load_image("datos/thread_top/011.png") 
+        mask_template = cv2.imread("datos/mask_template.png", cv2.IMREAD_GRAYSCALE)
+
         gray_img, mask = preprocess_and_segment(img)
         aligned_img, aligned_mask = align_spatial(gray_img, mask)
+        #aligned_img, aligned_mask = align_to_template(aligned_img, aligned_mask, mask_template)
+        
+        plt.subplot(1,2,1)
+        plt.imshow(aligned_img)
+        plt.subplot(1,2,2)
+        plt.imshow(aligned_mask)
+        plt.show()
         #regions_gray, regions_masks = split_regions(aligned_img, aligned_mask)
 
         # plt.figure(figsize=(12,4))

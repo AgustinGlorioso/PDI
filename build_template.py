@@ -49,7 +49,7 @@ def load_aligned_data():
 
     return aligned_images, aligned_masks
 
-def plot_overlay(masks):
+def generate_template(masks):
     plt.figure(figsize=(10, 8))
     # Creamos un fondo oscuro para que resalte el blanco
     canvas = np.zeros(masks[0].shape, dtype=float)
@@ -58,11 +58,15 @@ def plot_overlay(masks):
     
     # Normalizamos para visualización (0 a 1)
     canvas /= len(masks)
-    
-    plt.imshow(canvas, cmap="gray")
-    plt.title("Superposición de máscaras alineadas (Unificadas)")
+
+    mask_template = (canvas > 0.1).astype(np.uint8) * 255 ### <------
+    plt.imshow(mask_template, cmap="gray")
+    plt.title("Superposición de máscaras alineadas - Template")
     plt.axis("off")
     plt.show()
+
+    ruta_destino = os.path.join("datos", "mask_template.png")
+    plt.imsave(ruta_destino, mask_template, cmap="gray")
 
 def plot_mean_mask(masks):
     stack = np.stack(masks)
@@ -102,28 +106,27 @@ def create_golden_template(images):
 if __name__ == "__main__":
     # 1. Cargar datos
     images, masks = load_aligned_data()
-    print(f"Datos cargados: {len(images)}")
-
+    generate_template(masks)
     # 2. Crear templates
-    golden_template, std_template = create_golden_template(images)
+    # golden_template, std_template = create_golden_template(images)
 
-    # 3. Graficar con subplots
-    fig, ax = plt.subplots(1, 2, figsize=(15, 7))
+    # # 3. Graficar con subplots
+    # fig, ax = plt.subplots(1, 2, figsize=(15, 7))
 
-    ax[0].imshow(cv2.cvtColor(golden_template, cv2.COLOR_BGR2RGB))
-    ax[0].set_title("Golden Template (Media)")
-    ax[0].axis("off")
+    # ax[0].imshow(cv2.cvtColor(golden_template, cv2.COLOR_BGR2RGB))
+    # ax[0].set_title("Golden Template (Media)")
+    # ax[0].axis("off")
 
-    # La desviación estándar se ve mejor en escala de grises o mapa térmico
-    if len(std_template.shape) == 3:
-        std_viz = cv2.cvtColor(std_template, cv2.COLOR_BGR2GRAY)
-    else:
-        std_viz = std_template
+    # # La desviación estándar se ve mejor en escala de grises o mapa térmico
+    # if len(std_template.shape) == 3:
+    #     std_viz = cv2.cvtColor(std_template, cv2.COLOR_BGR2GRAY)
+    # else:
+    #     std_viz = std_template
         
-    im = ax[1].imshow(std_viz, cmap='hot')
-    ax[1].set_title("Mapa de Variabilidad (STD)")
-    ax[1].axis("off")
-    plt.colorbar(im, ax=ax[1], fraction=0.046, pad=0.04)
+    # im = ax[1].imshow(std_viz, cmap='hot')
+    # ax[1].set_title("Mapa de Variabilidad (STD)")
+    # ax[1].axis("off")
+    # plt.colorbar(im, ax=ax[1], fraction=0.046, pad=0.04)
 
-    plt.tight_layout()
-    plt.show()
+    # plt.tight_layout()
+    # plt.show()
