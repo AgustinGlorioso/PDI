@@ -1,132 +1,222 @@
+"""
+build_template.py — Construcción de la plantilla estadística ("golden template").
+
+Procesa las 41 imágenes SIN defecto (carpeta datos/good) con las fases 1-2
+del pipeline y acumula sus máscaras alineadas para construir un modelo
+estadístico de "cómo es un tornillo sano":
+
+    media_mascara(x, y) = fracción de tornillos sanos que tienen
+                          metal en el píxel (x, y)   ∈ [0, 1]
+
+De esa media se derivan las dos zonas que usa el detector de forma:
+
+    NÚCLEO    = píxeles con media >= UMBRAL_NUCLEO  (casi SIEMPRE hay metal)
+                -> si a un tornillo le FALTA material acá, es anómalo.
+    EXTERIOR  = píxeles con media <= UMBRAL_EXTERIOR (casi NUNCA hay metal)
+                -> si a un tornillo le SOBRA material acá, es anómalo.
+
+    La franja intermedia (0.03 < media < 0.97) es la BANDA DE TOLERANCIA:
+    allí los tornillos sanos a veces tienen metal y a veces no (los dientes
+    de la rosca cambian de fase según cuánto esté girado el tornillo sobre
+    su propio eje), así que esa zona NO se usa para decidir.
+
+Además guarda la imagen de gris promedio y el mapa de desviación estándar,
+útiles para ilustrar la variabilidad del dataset en el informe.
+
+Salidas (carpeta plantillas/):
+    media_mascara.npy   media de las máscaras alineadas (float32 0-1)
+    nucleo.png          zona núcleo binaria {0,255}
+    exterior.png        zona exterior binaria {0,255}
+    mascara_binaria.png plantilla binaria (media > 0.5), para corregir flips
+    media_gris.png      promedio de las imágenes de gris alineadas
+    std_gris.png        desviación estándar del gris (mapa de variabilidad)
+    plantilla_info.json metadatos (cantidad de imágenes, umbrales usados)
+
+Uso:
+    python build_template.py
+"""
+
+import json
 import os
+
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Asumo que estas funciones vienen de tu archivo 'test'
-from test import (
-    load_image,
-    preprocess_and_segment,
-    align_spatial
-)
+from pipeline import procesar_imagen, corregir_flip_vertical
 
-GOOD_PATH = "datos/good"
+# ----------------------------------------------------------------------------
+# Configuración
+# ----------------------------------------------------------------------------
+CARPETA_GOOD = os.path.join("datos", "good")
+CARPETA_SALIDA = "plantillas"
 
-def load_aligned_data():
-    aligned_images = []
-    aligned_masks = []
-    master_mask = None 
+# Umbrales de consenso para definir las zonas estadísticas. Con 41 imágenes,
+# 0.97 equivale a exigir que 40 de 41 tornillos sanos tengan metal en el
+# píxel, y 0.03 a que como máximo 1 de 41 lo tenga.
+UMBRAL_NUCLEO = 0.97
+UMBRAL_EXTERIOR = 0.03
 
-    for i in range(41):
-        filename = f"{i:03d}.png"
-        path = os.path.join(GOOD_PATH, filename)
-        if not os.path.exists(path): continue
 
-        img = load_image(path)
-        _, mask = preprocess_and_segment(img)
-        
-        # OJO: align_spatial debe devolver (imagen_alineada, mascara_alineada)
-        aligned_img, aligned_mask = align_spatial(img, mask)
-        
-        curr_mask = (aligned_mask > 0).astype(np.uint8)
+def cargar_good_alineadas():
+    """Procesa todas las imágenes 'good' y resuelve el espejo vertical.
 
-        if master_mask is None:
-            master_mask = curr_mask
-            aligned_images.append(aligned_img)
-            aligned_masks.append(curr_mask)
+    El espejo vertical (¿el tornillo quedó "boca arriba" o "boca abajo"?)
+    es ambiguo imagen por imagen, así que se resuelve por consenso:
+
+      - La primera imagen fija la orientación de referencia.
+      - Cada imagen siguiente se compara contra el PROMEDIO ACUMULADO de las
+        máscaras ya aceptadas, en versión normal y espejada, y se queda la
+        de mayor superposición. Usar el promedio acumulado (y no solo la
+        primera máscara) hace la decisión cada vez más estable a medida que
+        se suman imágenes.
+
+    Devuelve:
+        (lista_grises, lista_mascaras): imágenes y máscaras alineadas, todas
+        con la misma orientación vertical.
+    """
+    grises, mascaras = [], []
+    suma = None  # acumulador float de las máscaras aceptadas
+
+    archivos = sorted(os.listdir(CARPETA_GOOD))
+    for nombre in archivos:
+        if not nombre.endswith(".png"):
+            continue
+        r = procesar_imagen(os.path.join(CARPETA_GOOD, nombre))
+        gris, masc = r["gris_alineada"], r["mascara_alineada"]
+
+        if suma is None:
+            # La primera imagen define la orientación de referencia
+            suma = (masc > 0).astype(np.float32)
         else:
-            # Lógica del Flip para cerrar la "V"
-            flipped_mask = cv2.flip(curr_mask, 0)
-            overlap_normal = np.sum(cv2.bitwise_and(curr_mask, master_mask))
-            overlap_flipped = np.sum(cv2.bitwise_and(flipped_mask, master_mask))
+            # Plantilla provisoria = promedio acumulado binarizado al 50%
+            promedio = (suma / len(mascaras) > 0.5).astype(np.uint8) * 255
+            gris, masc, _ = corregir_flip_vertical(gris, masc, promedio)
+            suma += (masc > 0).astype(np.float32)
 
-            if overlap_flipped > overlap_normal:
-                aligned_images.append(cv2.flip(aligned_img, 0)) # Girar imagen también
-                aligned_masks.append(flipped_mask)
-            else:
-                aligned_images.append(aligned_img)
-                aligned_masks.append(curr_mask)
+        grises.append(gris)
+        mascaras.append(masc)
+        print(f"  {nombre}: angulo={r['angulo']:7.2f} grados")
 
-    return aligned_images, aligned_masks
+    return grises, mascaras
 
-def generate_template(masks):
-    plt.figure(figsize=(10, 8))
-    # Creamos un fondo oscuro para que resalte el blanco
-    canvas = np.zeros(masks[0].shape, dtype=float)
-    for mask in masks:
-        canvas += mask
-    
-    # Normalizamos para visualización (0 a 1)
-    canvas /= len(masks)
 
-    mask_template = (canvas > 0.1).astype(np.uint8) * 255 ### <------
-    plt.imshow(mask_template, cmap="gray")
-    plt.title("Superposición de máscaras alineadas - Template")
-    plt.axis("off")
-    plt.show()
+def construir_plantillas(grises, mascaras):
+    """Acumula las máscaras y deriva las zonas estadísticas.
 
-    ruta_destino = os.path.join("datos", "mask_template.png")
-    plt.imsave(ruta_destino, mask_template, cmap="gray")
+    Devuelve un diccionario con todos los productos de la plantilla.
+    """
+    # Pila (N, H, W) de máscaras en {0,1} y de grises
+    pila_masc = np.stack([(m > 0).astype(np.float32) for m in mascaras])
+    pila_gris = np.stack(grises).astype(np.float32)
 
-def plot_mean_mask(masks):
-    stack = np.stack(masks)
-    mean_mask = np.mean(stack, axis=0)
+    # Media píxel a píxel: fracción de tornillos sanos con metal en cada punto
+    media_mascara = pila_masc.mean(axis=0)
 
-    plt.figure(figsize=(10, 8))
-    im = plt.imshow(mean_mask, cmap='viridis') # Viridis ayuda a ver mejor los niveles
-    plt.colorbar(im)
-    plt.title("Mapa de consistencia de alineación (Unificada)")
-    plt.axis("off")
-    plt.show()
+    # Zonas de decisión (ver docstring del módulo)
+    nucleo = (media_mascara >= UMBRAL_NUCLEO).astype(np.uint8) * 255
+    exterior = (media_mascara <= UMBRAL_EXTERIOR).astype(np.uint8) * 255
 
-    return mean_mask
+    # Plantilla binaria al 50%: la silueta "típica", usada para orientar
+    # (corregir flips) las imágenes nuevas durante la inspección
+    binaria = (media_mascara > 0.5).astype(np.uint8) * 255
 
-def compute_alignment_score(mean_mask):
-    # Usamos un umbral pequeño para definir el área del tornillo total
-    screw_pixels = mean_mask > 0
-    if not np.any(screw_pixels):
-        return 0
-        
-    score = np.mean(mean_mask[screw_pixels])
-    print(f"Alignment Score: {score:.4f}")
-    return score
+    # Estadísticos del gris: promedio (tornillo "ideal") y desviación
+    # estándar (dónde varía la apariencia entre tornillos sanos). El
+    # detector de intensidad compara cada pieza nueva contra estos dos
+    # mapas: las zonas de std alta (brillos del cuello, dientes de rosca
+    # que cambian de fase) quedan automáticamente toleradas.
+    media_gris_f = pila_gris.mean(axis=0)
+    std_gris = pila_gris.std(axis=0)
 
-def create_golden_template(images):
-    # Convertimos la lista a un array de 4 dimensiones (N, H, W, C)
-    stack = np.stack(images).astype(np.float32)
-    
-    # Promedio (Template Maestro)
-    mean_img = np.mean(stack, axis=0).astype(np.uint8)
-    
-    # Desviación Estándar (Mapa de Tolerancia)
-    std_img = np.std(stack, axis=0).astype(np.uint8)
-    
-    return mean_img, std_img
+    return {
+        "media_mascara": media_mascara.astype(np.float32),
+        "nucleo": nucleo,
+        "exterior": exterior,
+        "binaria": binaria,
+        "media_gris": media_gris_f.astype(np.uint8),
+        "media_gris_f": media_gris_f,
+        "std_gris": std_gris,
+        "n": len(mascaras),
+    }
+
+
+def guardar_plantillas(p):
+    """Persiste las plantillas en la carpeta plantillas/."""
+    os.makedirs(CARPETA_SALIDA, exist_ok=True)
+
+    np.save(os.path.join(CARPETA_SALIDA, "media_mascara.npy"), p["media_mascara"])
+    # Media y desviación del gris en float32 SIN cuantizar: el detector de
+    # intensidad las usa para el mapa z y una versión redondeada a 8 bits
+    # perdería precisión justo donde la desviación es chica
+    np.save(os.path.join(CARPETA_SALIDA, "media_gris.npy"),
+            p["media_gris_f"].astype(np.float32))
+    np.save(os.path.join(CARPETA_SALIDA, "std_gris.npy"),
+            p["std_gris"].astype(np.float32))
+    cv2.imwrite(os.path.join(CARPETA_SALIDA, "nucleo.png"), p["nucleo"])
+    cv2.imwrite(os.path.join(CARPETA_SALIDA, "exterior.png"), p["exterior"])
+    cv2.imwrite(os.path.join(CARPETA_SALIDA, "mascara_binaria.png"), p["binaria"])
+    cv2.imwrite(os.path.join(CARPETA_SALIDA, "media_gris.png"), p["media_gris"])
+    # La std se reescala a 0-255 solo para poder guardarla como imagen
+    std_vis = cv2.normalize(p["std_gris"], None, 0, 255, cv2.NORM_MINMAX)
+    cv2.imwrite(os.path.join(CARPETA_SALIDA, "std_gris.png"), std_vis.astype(np.uint8))
+
+    with open(os.path.join(CARPETA_SALIDA, "plantilla_info.json"), "w") as f:
+        json.dump(
+            {
+                "imagenes_usadas": p["n"],
+                "umbral_nucleo": UMBRAL_NUCLEO,
+                "umbral_exterior": UMBRAL_EXTERIOR,
+            },
+            f,
+            indent=2,
+        )
+    print(f"Plantillas guardadas en '{CARPETA_SALIDA}/'")
+
+
+def visualizar(p):
+    """Figura resumen de la plantilla construida (se guarda como PNG)."""
+    fig, axs = plt.subplots(2, 3, figsize=(18, 10))
+
+    im0 = axs[0, 0].imshow(p["media_mascara"], cmap="viridis")
+    axs[0, 0].set_title(f"Media de máscaras (n={p['n']})")
+    plt.colorbar(im0, ax=axs[0, 0], fraction=0.046)
+
+    axs[0, 1].imshow(p["nucleo"], cmap="gray")
+    axs[0, 1].set_title(f"Núcleo (media >= {UMBRAL_NUCLEO})")
+
+    axs[0, 2].imshow(p["exterior"], cmap="gray")
+    axs[0, 2].set_title(f"Exterior (media <= {UMBRAL_EXTERIOR})")
+
+    axs[1, 0].imshow(p["binaria"], cmap="gray")
+    axs[1, 0].set_title("Plantilla binaria (50%)")
+
+    axs[1, 1].imshow(p["media_gris"], cmap="gray")
+    axs[1, 1].set_title("Gris promedio (golden template)")
+
+    im5 = axs[1, 2].imshow(p["std_gris"], cmap="hot")
+    axs[1, 2].set_title("Desv. estándar del gris")
+    plt.colorbar(im5, ax=axs[1, 2], fraction=0.046)
+
+    for fila in axs:
+        for ax in fila:
+            ax.axis("off")
+    plt.tight_layout()
+    ruta = os.path.join(CARPETA_SALIDA, "resumen_plantilla.png")
+    plt.savefig(ruta, dpi=80)
+    print(f"Figura resumen: {ruta}")
+
 
 if __name__ == "__main__":
-    # 1. Cargar datos
-    images, masks = load_aligned_data()
-    generate_template(masks)
-    # 2. Crear templates
-    # golden_template, std_template = create_golden_template(images)
+    print("Construyendo plantilla a partir de", CARPETA_GOOD)
+    grises, mascaras = cargar_good_alineadas()
+    plantilla = construir_plantillas(grises, mascaras)
+    guardar_plantillas(plantilla)
+    visualizar(plantilla)
 
-    # # 3. Graficar con subplots
-    # fig, ax = plt.subplots(1, 2, figsize=(15, 7))
-
-    # ax[0].imshow(cv2.cvtColor(golden_template, cv2.COLOR_BGR2RGB))
-    # ax[0].set_title("Golden Template (Media)")
-    # ax[0].axis("off")
-
-    # # La desviación estándar se ve mejor en escala de grises o mapa térmico
-    # if len(std_template.shape) == 3:
-    #     std_viz = cv2.cvtColor(std_template, cv2.COLOR_BGR2GRAY)
-    # else:
-    #     std_viz = std_template
-        
-    # im = ax[1].imshow(std_viz, cmap='hot')
-    # ax[1].set_title("Mapa de Variabilidad (STD)")
-    # ax[1].axis("off")
-    # plt.colorbar(im, ax=ax[1], fraction=0.046, pad=0.04)
-
-    # plt.tight_layout()
-    # plt.show()
+    # Reporte rápido de consistencia: qué fracción del área típica del
+    # tornillo quedó como núcleo. Si fuera baja, la alineación sería mala.
+    area_bin = np.count_nonzero(plantilla["binaria"])
+    area_nuc = np.count_nonzero(plantilla["nucleo"])
+    print(f"Área plantilla binaria: {area_bin} px | núcleo: {area_nuc} px "
+          f"({100 * area_nuc / max(area_bin, 1):.1f}% del área típica)")

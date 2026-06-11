@@ -1,0 +1,62 @@
+{
+  "umbrales": {
+    "forma_cabeza": 0.003,
+    "int_cabeza": 0.003,
+    "forma_cuello": 0.003,
+    "int_cuello": 0.003,
+    "forma_rosca": 0.03870135454740916,
+    "int_rosca": 0.003,
+    "forma_punta": 0.008034610630407911,
+    "int_punta": 0.003
+  },
+  "estadisticas": {
+    "forma_cabeza": {
+      "media": 0.0,
+      "desvio": 0.0,
+      "maximo": 0.0,
+      "n": 41
+    },
+    "int_cabeza": {
+      "media": 0.0,
+      "desvio": 0.0,
+      "maximo": 0.0,
+      "n": 41
+    },
+    "forma_cuello": {
+      "media": 0.0,
+      "desvio": 0.0,
+      "maximo": 0.0,
+      "n": 41
+    },
+    "int_cuello": {
+      "media": 0.0,
+      "desvio": 0.0,
+      "maximo": 0.0,
+      "n": 41
+    },
+    "forma_rosca": {
+      "media": 0.0020444443778528765,
+      "desvio": 0.006958913993980607,
+      "maximo": 0.030961083637927326,
+      "n": 41
+    },
+    "int_rosca": {
+      "media": 0.0,
+      "desvio": 0.0,
+      "maximo": 0.0,
+      "n": 41
+    },
+    "forma_punta": {
+      "media": 0.00015677289034942267,
+      "desvio": 0.0009915188177440123,
+      "maximo": 0.006427688504326329,
+      "n": 41
+    },
+    "int_punta": {
+      "media": 0.0,
+      "desvio": 0.0,
+      "maximo": 0.0,
+      "n": 41
+    }
+  }
+}
