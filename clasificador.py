@@ -67,6 +67,16 @@ def cargar_plantillas():
             )
         return np.load(ruta)
 
+    # Las bandas del perfil de rosca vienen en un .npz (8 arrays con
+    # nombre); se convierten a dict para el detector
+    ruta_bandas = os.path.join(CARPETA_PLANTILLAS, "bandas_perfil.npz")
+    if not os.path.exists(ruta_bandas):
+        raise FileNotFoundError(
+            f"Falta la plantilla '{ruta_bandas}'. Ejecutá primero build_template.py"
+        )
+    with np.load(ruta_bandas) as npz:
+        bandas = {k: npz[k] for k in npz.files}
+
     return {
         "nucleo": _leer("nucleo.png"),
         "exterior": _leer("exterior.png"),
@@ -75,6 +85,8 @@ def cargar_plantillas():
         # Estadísticos en float32 para el detector de intensidad (mapa z)
         "media_gris_f": _leer_npy("media_gris.npy"),
         "std_gris": _leer_npy("std_gris.npy"),
+        # Bandas [min, max] de las envolventes (detector de perfil)
+        "bandas_perfil": bandas,
     }
 
 

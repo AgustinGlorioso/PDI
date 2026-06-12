@@ -36,10 +36,15 @@ from clasificador import cargar_plantillas, guardar_umbrales
 
 CARPETA_GOOD = os.path.join("datos", "good")
 
-# Piso mínimo de los umbrales: 0.3% del área de la región. Por debajo de
-# esa fracción una "anomalía" sería más chica que el ruido esperable de la
-# discretización (rotaciones interpoladas, bordes de píxel).
-PISO_MINIMO = 0.003
+# Pisos mínimos de los umbrales, según las unidades de cada score:
+#   - forma_* / int_*  : fracción del área de la región. 0.2% es menos que
+#     el ruido esperable de la discretización (rotaciones interpoladas).
+#   - perfil_*         : px promedio de exceso de envolvente por columna.
+#     0.10 px equivale, p. ej., a una muesca de ~6 px sostenida durante
+#     ~5 columnas más allá de la banda de los sanos: el defecto mínimo
+#     que vale la pena reportar.
+PISO_AREA = 0.002
+PISO_PERFIL = 0.10
 
 
 def calibrar():
@@ -76,7 +81,8 @@ def calibrar():
         valores = np.array([t[k] for t in todos])
         media, desvio, maximo = valores.mean(), valores.std(), valores.max()
 
-        umbral = max(media + 3 * desvio, 1.25 * maximo, PISO_MINIMO)
+        piso = PISO_PERFIL if k.startswith("perfil") else PISO_AREA
+        umbral = max(media + 3 * desvio, 1.25 * maximo, piso)
 
         umbrales[k] = float(umbral)
         estadisticas[k] = {

@@ -5,3 +5,7 @@ datos.zip
 # Archivos compilados de Python
 __pycache__/
 *.pyc
+
+# Artefactos regenerables (se crean con build_template.py y evaluar.py)
+plantillas/
+resultados.csv

@@ -44,6 +44,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from pipeline import procesar_imagen, corregir_flip_vertical
+from detectores import perfiles_envolvente
 
 # ----------------------------------------------------------------------------
 # Configuración
@@ -62,14 +63,21 @@ def cargar_good_alineadas():
     """Procesa todas las imágenes 'good' y resuelve el espejo vertical.
 
     El espejo vertical (¿el tornillo quedó "boca arriba" o "boca abajo"?)
-    es ambiguo imagen por imagen, así que se resuelve por consenso:
+    es ambiguo imagen por imagen, así que se resuelve por consenso en DOS
+    pasadas:
 
-      - La primera imagen fija la orientación de referencia.
-      - Cada imagen siguiente se compara contra el PROMEDIO ACUMULADO de las
-        máscaras ya aceptadas, en versión normal y espejada, y se queda la
-        de mayor superposición. Usar el promedio acumulado (y no solo la
-        primera máscara) hace la decisión cada vez más estable a medida que
-        se suman imágenes.
+      Pasada 1: la primera imagen fija la orientación de referencia y cada
+        imagen siguiente se compara contra el PROMEDIO ACUMULADO de las
+        máscaras ya aceptadas (versión normal vs. espejada, gana la de
+        mayor superposición). El promedio acumulado hace la decisión cada
+        vez más estable a medida que se suman imágenes.
+
+      Pasada 2: con la plantilla provisoria COMPLETA, se vuelve a decidir
+        el flip de TODAS las imágenes contra ella. Esto es imprescindible
+        para la consistencia: durante la inspección (calibrar/evaluar) el
+        flip se decide contra la plantilla final, y si acá quedara alguna
+        imagen decidida contra un promedio parcial distinto, esa imagen
+        "sana" violaría las bandas construidas con ella misma.
 
     Devuelve:
         (lista_grises, lista_mascaras): imágenes y máscaras alineadas, todas
@@ -78,6 +86,7 @@ def cargar_good_alineadas():
     grises, mascaras = [], []
     suma = None  # acumulador float de las máscaras aceptadas
 
+    # --- Pasada 1: orientación por consenso acumulado ----------------------
     archivos = sorted(os.listdir(CARPETA_GOOD))
     for nombre in archivos:
         if not nombre.endswith(".png"):
@@ -97,6 +106,21 @@ def cargar_good_alineadas():
         grises.append(gris)
         mascaras.append(masc)
         print(f"  {nombre}: angulo={r['angulo']:7.2f} grados")
+
+    # --- Pasada 2: re-decidir todos los flips contra la plantilla final ----
+    plantilla_v1 = (
+        np.mean([(m > 0) for m in mascaras], axis=0) > 0.5
+    ).astype(np.uint8) * 255
+
+    corregidos = 0
+    for i in range(len(mascaras)):
+        gris, masc, giro = corregir_flip_vertical(
+            grises[i], mascaras[i], plantilla_v1
+        )
+        grises[i], mascaras[i] = gris, masc
+        corregidos += int(giro)
+    print(f"  Pasada 2: {corregidos} imagen(es) reorientada(s) contra la "
+          f"plantilla final")
 
     return grises, mascaras
 
@@ -129,6 +153,20 @@ def construir_plantillas(grises, mascaras):
     media_gris_f = pila_gris.mean(axis=0)
     std_gris = pila_gris.std(axis=0)
 
+    # ------------------------------------------------------------------
+    # Bandas de los perfiles de envolvente (detector de perfil de rosca):
+    # para cada una de las 4 señales (cresta/valle, superior/inferior) se
+    # registra el mínimo y el máximo que toma en los tornillos sanos,
+    # columna a columna. Una pieza nueva cuyo perfil escape de la banda
+    # [min, max] (+ margen) tiene la rosca o la punta deformada.
+    # ------------------------------------------------------------------
+    perfiles_buenos = [perfiles_envolvente(m) for m in mascaras]
+    bandas = {}
+    for senal in ("cresta_sup", "valle_sup", "cresta_inf", "valle_inf"):
+        pila = np.stack([p[senal] for p in perfiles_buenos])
+        bandas[f"{senal}_min"] = pila.min(axis=0).astype(np.float32)
+        bandas[f"{senal}_max"] = pila.max(axis=0).astype(np.float32)
+
     return {
         "media_mascara": media_mascara.astype(np.float32),
         "nucleo": nucleo,
@@ -137,6 +175,7 @@ def construir_plantillas(grises, mascaras):
         "media_gris": media_gris_f.astype(np.uint8),
         "media_gris_f": media_gris_f,
         "std_gris": std_gris,
+        "bandas_perfil": bandas,
         "n": len(mascaras),
     }
 
@@ -153,6 +192,9 @@ def guardar_plantillas(p):
             p["media_gris_f"].astype(np.float32))
     np.save(os.path.join(CARPETA_SALIDA, "std_gris.npy"),
             p["std_gris"].astype(np.float32))
+    # Bandas del detector de perfil de rosca (8 arrays en un solo .npz)
+    np.savez(os.path.join(CARPETA_SALIDA, "bandas_perfil.npz"),
+             **p["bandas_perfil"])
     cv2.imwrite(os.path.join(CARPETA_SALIDA, "nucleo.png"), p["nucleo"])
     cv2.imwrite(os.path.join(CARPETA_SALIDA, "exterior.png"), p["exterior"])
     cv2.imwrite(os.path.join(CARPETA_SALIDA, "mascara_binaria.png"), p["binaria"])
