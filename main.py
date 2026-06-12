@@ -28,7 +28,12 @@ from detectores import inspeccionar, REGIONES
 from clasificador import cargar_plantillas, cargar_umbrales, clasificar
 
 # Imagen procesada si no se pasa ninguna por línea de comandos
-IMAGEN_DEMO = "datos/scratch_head/000.png"
+#IMAGEN_DEMO = "datos/good/000.png"
+#IMAGEN_DEMO = "datos/manipulated_front/000.png"
+#IMAGEN_DEMO = "datos/scratch_head/000.png"
+#IMAGEN_DEMO = "datos/scratch_neck/000.png"
+#IMAGEN_DEMO = "datos/thread_side/000.png"
+IMAGEN_DEMO = "datos/thread_top/000.png"
 
 # Colores (RGB) para superponer cada tipo de evidencia sobre la imagen
 COLOR_FORMA = (255, 60, 60)        # rojo:    defecto de forma (silueta)
