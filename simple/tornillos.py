@@ -1,10 +1,6 @@
 """
 tornillos.py - Nucleo del sistema de deteccion de anomalias en tornillos.
 
-Junta en un solo archivo todo lo que en la version original estaba repartido
-en pipeline.py + detectores.py + clasificador.py. El algoritmo es identico;
-solo se reorganizo y se comento mas simple.
-
 El flujo para una imagen es:
     cargar -> segmentar -> alinear -> 3 detectores -> scores -> diagnostico
 
@@ -18,13 +14,13 @@ import json
 import cv2
 import numpy as np
 
-# --- Rutas (relativas a la ubicacion de este archivo, asi corre desde donde sea) ---
+
 _AQUI = os.path.dirname(os.path.abspath(__file__))
 CARPETA_DATOS = os.path.normpath(os.path.join(_AQUI, "..", "datos"))   # las fotos
 CARPETA_PLANTILLAS = os.path.join(_AQUI, "plantillas")                 # lo que aprende
 RUTA_UMBRALES = os.path.join(CARPETA_PLANTILLAS, "umbrales.json")
 
-# --- Parametros generales ---
+#  Parametros generales 
 MARGEN_X = 50            # columna donde queda anclada la cabeza tras alinear
 FILA_EJE = 512           # fila central: ahi queda el eje del tornillo
 
@@ -45,20 +41,20 @@ TIPO_POR_REGION = {
     "punta": "manipulated_front",
 }
 
-# --- Parametros de la plantilla ---
+#  Parametros de la plantilla 
 UMBRAL_NUCLEO = 0.97     # un pixel es "nucleo" si >=97% de los sanos tienen metal ahi
 UMBRAL_EXTERIOR = 0.03   # es "exterior" si <=3% de los sanos tienen metal ahi
 
-# --- Parametros del detector de forma ---
+#  Parametros del detector de forma 
 TOL_FORMA_PX = 5         # cuanto se achican las zonas, como margen de seguridad
 AREA_MIN_FORMA = 120     # manchas de defecto mas chicas que esto se descartan
 
-# --- Parametros del detector de perfil de rosca ---
+#  Parametros del detector de perfil de rosca 
 PASO_ROSCA = 63          # separacion entre dientes del filete, en px
 COLS_PERFIL = (490, 990) # zona donde se analiza el perfil (rosca + punta)
 MARGEN_PERFIL = 2        # holgura sobre la banda de los sanos, en px
 
-# --- Parametros del detector de intensidad ---
+#  Parametros del detector de intensidad 
 EROSION_INTERNA_PX = 8   # cuanto se mete la mascara hacia adentro (evita el borde)
 Z_UMBRAL = 2.5           # cuantos desvios estandar para considerar un pixel raro
 DIF_MINIMA = 20          # ademas, cuantos niveles de gris de diferencia minima
@@ -66,12 +62,12 @@ EPS_STD = 6.0            # evita dividir por una std casi cero
 AREA_MIN_INT = 80        # manchas de defecto mas chicas que esto se descartan
 
 
-# ===========================================================================
 # FASE 1-2: cargar, segmentar y alinear
-# ===========================================================================
+
 
 def cargar_imagen(ruta):
-    """Lee la imagen y la devuelve en color (para mostrar) y en gris (para trabajar)."""
+    # Lee la imagen y la devuelve en color para mostrar y en gris para trabajar.
+
     if not os.path.exists(ruta):
         raise FileNotFoundError(f"No se encontro la imagen en: {ruta}")
     img_bgr = cv2.imread(ruta)                          # OpenCV lee en BGR
@@ -81,11 +77,7 @@ def cargar_imagen(ruta):
 
 
 def segmentar(img_gris):
-    """Separa el tornillo del fondo usando bordes (Canny), no umbral de gris.
-
-    Se usa Canny y no Otsu porque la sombra difusa del fondo confunde a Otsu
-    e infla la mascara. El borde metal-fondo es nitido y Canny lo agarra bien.
-    """
+    # Separa el tornillo del fondo usando bordes (Canny)
     suavizada = cv2.GaussianBlur(img_gris, (3, 3), 0)   # saca un poco de ruido
     bordes = cv2.Canny(suavizada, 40, 90)               # detecta los bordes nitidos
 
@@ -106,8 +98,9 @@ def segmentar(img_gris):
 
 
 def _angulo_por_momentos(mascara):
-    """Calcula el angulo del eje largo del tornillo usando momentos (equivale a PCA)."""
-    M = cv2.moments(mascara, binaryImage=True)
+    # Calcula el angulo del eje largo del tornillo usando momentos de la mascara. 
+    # Tambien devuelve el centroide (cx, cy) que es el punto fijo para rotar.
+    M = cv2.moments(mascara, binaryImage=True) # momentos de la mascara (solo pixeles blancos cuentan)
     if M["m00"] == 0:                                    # mascara vacia
         return 0.0, (mascara.shape[1] // 2, mascara.shape[0] // 2)
     cx = M["m10"] / M["m00"]                             # centroide en x
@@ -117,7 +110,8 @@ def _angulo_por_momentos(mascara):
 
 
 def alinear(img_gris, mascara):
-    """Pone el tornillo horizontal, con la cabeza a la izquierda y en un lugar fijo."""
+    # Pone el tornillo horizontal, con la cabeza a la izquierda y en un lugar fijo.
+
     h, w = mascara.shape
     angulo, (cx, cy) = _angulo_por_momentos(mascara)
 
@@ -132,18 +126,18 @@ def alinear(img_gris, mascara):
     masa_der = cv2.countNonZero(masc_prueba[:, mitad:x_r + w_r])
     if masa_der > masa_izq:                              # cabeza quedo a la derecha
         angulo += 180.0                                  # la giramos 180 grados
-        M_prueba = cv2.getRotationMatrix2D((cx, cy), angulo, 1.0)
+        M_prueba = cv2.getRotationMatrix2D((cx, cy), angulo, 1.0) 
         masc_prueba = cv2.warpAffine(mascara, M_prueba, (w, h), flags=cv2.INTER_NEAREST)
         x_r, y_r, w_r, h_r = cv2.boundingRect(masc_prueba)
 
     # Armamos la transformacion final: rotacion + traslacion para anclar la pieza
     M_final = cv2.getRotationMatrix2D((cx, cy), angulo, 1.0)
-    M_final[0, 2] += MARGEN_X - x_r                      # cabeza -> columna MARGEN_X
+    M_final[0, 2] += MARGEN_X - x_r                      # cabeza -> columna MARGEN_X 
     M_cy = cv2.moments(masc_prueba, binaryImage=True)
-    cy_rotado = M_cy["m01"] / M_cy["m00"] if M_cy["m00"] else h / 2
+    cy_rotado = M_cy["m01"] / M_cy["m00"] if M_cy["m00"] else h / 2 # nuevo centroide en y tras rotar
     M_final[1, 2] += h / 2 - cy_rotado                   # eje -> fila central
 
-    # Una sola transformacion sobre la imagen real (mejor que dos seguidas)
+    # Una sola transformacion sobre la imagen real 
     gris_alineada = cv2.warpAffine(img_gris, M_final, (w, h),
                                    flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
     masc_alineada = cv2.warpAffine(mascara, M_final, (w, h), flags=cv2.INTER_NEAREST)
@@ -151,7 +145,7 @@ def alinear(img_gris, mascara):
 
 
 def corregir_flip_vertical(gris_a, masc_a, mascara_plantilla):
-    """Decide si el tornillo quedo 'boca arriba' o 'boca abajo' comparando con la plantilla."""
+    # Decide si el tornillo quedo "boca arriba" o "boca abajo" comparando con la plantilla.
     volteada = cv2.flip(masc_a, 0)                       # version espejada
     # Vemos cual de las dos se parece mas a la plantilla (mas pixeles en comun)
     overlap_normal = cv2.countNonZero(cv2.bitwise_and(masc_a, mascara_plantilla))
@@ -162,7 +156,7 @@ def corregir_flip_vertical(gris_a, masc_a, mascara_plantilla):
 
 
 def procesar_imagen(ruta, mascara_plantilla=None):
-    """Hace todo el pre-procesamiento de una imagen: cargar -> segmentar -> alinear."""
+    # Hace todo el pre-procesamiento de una imagen: cargar -> segmentar -> alinear.
     img_rgb, img_gris = cargar_imagen(ruta)
     mascara = segmentar(img_gris)
     gris_a, masc_a, angulo = alinear(img_gris, mascara)
@@ -176,13 +170,11 @@ def procesar_imagen(ruta, mascara_plantilla=None):
             "angulo": angulo, "flip": se_giro}
 
 
-# ===========================================================================
-# FASE 3-4: los tres detectores
-# ===========================================================================
+# FASE 3-4: los tres detectores de defecto + calculo de scores
 
 def _filtrar_por_area(mascara_binaria, area_minima):
-    """Borra las manchas mas chicas que area_minima (son ruido, no defectos)."""
-    n, etiquetas, stats, _ = cv2.connectedComponentsWithStats(mascara_binaria, connectivity=8)
+    # Borra las manchas mas chicas que area_minima (son ruido, no defectos).
+    n, etiquetas, stats, _ = cv2.connectedComponentsWithStats(mascara_binaria, connectivity=8) # encuentra las manchas (componentes conectados) y sus areas
     salida = np.zeros_like(mascara_binaria)
     for i in range(1, n):                                # la 0 es el fondo
         if stats[i, cv2.CC_STAT_AREA] >= area_minima:
@@ -191,22 +183,22 @@ def _filtrar_por_area(mascara_binaria, area_minima):
 
 
 def detectar_forma(mascara_alineada, nucleo, exterior):
-    """Compara la silueta contra la plantilla: busca metal que falta o que sobra."""
+    # Compara la silueta contra la plantilla: busca metal que falta o que sobra.
     # Achicamos las zonas un poco, como margen de seguridad
-    ee_tol = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * TOL_FORMA_PX + 1, 2 * TOL_FORMA_PX + 1))
-    nucleo_seguro = cv2.erode(nucleo, ee_tol)
-    exterior_seguro = cv2.erode(exterior, ee_tol)
+    ee_tol = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * TOL_FORMA_PX + 1, 2 * TOL_FORMA_PX + 1)) # elemento estructurante para erosionar las zonas de nucleo y exterior, como margen de seguridad
+    nucleo_seguro = cv2.erode(nucleo, ee_tol) # zona de nucleo mas chica, para no marcar como falta el metal que a veces no llega al borde del nucleo
+    exterior_seguro = cv2.erode(exterior, ee_tol) # zona de exterior mas chica, para no marcar como sobra el metal que a veces se extiende un poco mas alla del exterior
 
     # Falta metal donde siempre deberia haber / Sobra metal donde nunca deberia
     faltante = cv2.bitwise_and(nucleo_seguro, cv2.bitwise_not(mascara_alineada))
     sobrante = cv2.bitwise_and(mascara_alineada, exterior_seguro)
 
     # Limpieza: apertura (saca pixeles sueltos) + borrar manchas chicas
-    ee_chico = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    faltante = cv2.morphologyEx(faltante, cv2.MORPH_OPEN, ee_chico)
-    sobrante = cv2.morphologyEx(sobrante, cv2.MORPH_OPEN, ee_chico)
-    faltante = _filtrar_por_area(faltante, AREA_MIN_FORMA)
-    sobrante = _filtrar_por_area(sobrante, AREA_MIN_FORMA)
+    ee_chico = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)) # elemento estructurante pequeño para la apertura, que saca pixeles sueltos
+    faltante = cv2.morphologyEx(faltante, cv2.MORPH_OPEN, ee_chico) # apertura para limpiar el defecto de forma de pixeles sueltos
+    sobrante = cv2.morphologyEx(sobrante, cv2.MORPH_OPEN, ee_chico) # apertura para limpiar el defecto de forma de pixeles sueltos
+    faltante = _filtrar_por_area(faltante, AREA_MIN_FORMA) # borra manchas de falta de forma mas chicas que AREA_MIN_FORMA
+    sobrante = _filtrar_por_area(sobrante, AREA_MIN_FORMA) # borra manchas de sobra de forma mas chicas que AREA_MIN_FORMA
     return {"faltante": faltante, "sobrante": sobrante}
 
 
@@ -327,7 +319,7 @@ def calcular_scores(forma, intensidad, perfil, mascara_plantilla_binaria):
 
 
 def inspeccionar(gris_alineada, mascara_alineada, plantillas):
-    """Corre los 3 detectores y devuelve las mascaras de defecto + los scores."""
+    # Corre los 3 detectores y devuelve las mascaras de defecto + los scores
     forma = detectar_forma(mascara_alineada, plantillas["nucleo"], plantillas["exterior"])
     intensidad = detectar_intensidad(gris_alineada, mascara_alineada,
                                      plantillas["media_gris_f"], plantillas["std_gris"])
@@ -336,12 +328,10 @@ def inspeccionar(gris_alineada, mascara_alineada, plantillas):
     return {"forma": forma, "intensidad": intensidad, "perfil": perfil, "scores": scores}
 
 
-# ===========================================================================
 # FASE 5: clasificacion + carga de plantillas y umbrales
-# ===========================================================================
 
 def cargar_plantillas():
-    """Carga de disco todo lo que aprendio entrenar.py (la carpeta plantillas/)."""
+    # Carga todo lo que aprendio entrenar.py 
     def _leer(nombre):
         img = cv2.imread(os.path.join(CARPETA_PLANTILLAS, nombre), cv2.IMREAD_GRAYSCALE)
         if img is None:
@@ -364,7 +354,7 @@ def cargar_plantillas():
 
 
 def cargar_umbrales():
-    """Carga los umbrales calibrados por entrenar.py."""
+    # Carga los umbrales calibrados por entrenar.py.
     if not os.path.exists(RUTA_UMBRALES):
         raise FileNotFoundError("Falta umbrales.json. Ejecuta primero: python entrenar.py")
     with open(RUTA_UMBRALES) as f:
@@ -372,7 +362,7 @@ def cargar_umbrales():
 
 
 def clasificar(scores, umbrales):
-    """Decide Normal/Anomala y el tipo de defecto, a partir de los scores."""
+    # Decide Normal/Anomala y el tipo de defecto, a partir de los scores.
     # cuanto se pasa cada score de su umbral (1.0 = justo en el limite)
     excesos = {k: scores[k] / umbrales[k] if umbrales[k] > 0 else 0.0 for k in scores}
     score_max = max(excesos, key=excesos.get)            # el que mas se paso

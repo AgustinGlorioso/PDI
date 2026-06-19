@@ -1,10 +1,8 @@
 """
 entrenar.py - Prepara el sistema a partir de los tornillos sanos.
 
-Hace dos cosas que en la version original estaban en build_template.py y
-calibrar.py por separado:
-    1. Construye la plantilla estadistica (como es un tornillo sano).
-    2. Calibra los umbrales de decision (cuanto defecto es "demasiado").
+1. Construye la plantilla estadistica (como es un tornillo sano).
+2. Calibra los umbrales de decision (cuanto defecto es "demasiado").
 
 Se ejecuta una sola vez, antes de inspeccionar nada:
     python entrenar.py
@@ -27,12 +25,11 @@ PISO_AREA = 0.002        # para los scores de forma/intensidad (fraccion de area
 PISO_PERFIL = 0.10       # para los scores de perfil (px de exceso por columna)
 
 
-# ---------------------------------------------------------------------------
 # Parte 1: construir la plantilla
-# ---------------------------------------------------------------------------
 
 def cargar_good_alineadas():
-    """Alinea las 41 fotos sanas y deja todas con la misma orientacion (2 pasadas)."""
+    # Alinea las 41 fotos sanas y deja todas con la misma orientacion (2 pasadas).
+    # Devuelve las imagenes grises y sus mascaras alineadas, para construir la plantilla.
     grises, mascaras = [], []
     suma = None                                          # promedio acumulado de mascaras
 
@@ -65,7 +62,7 @@ def cargar_good_alineadas():
 
 
 def construir_plantillas(grises, mascaras):
-    """Calcula todo lo que define al tornillo sano: zonas, gris promedio, bandas."""
+    # Calcula todo lo que define al tornillo sano: zonas, gris promedio, bandas.
     pila_masc = np.stack([(m > 0).astype(np.float32) for m in mascaras])
     pila_gris = np.stack(grises).astype(np.float32)
 
